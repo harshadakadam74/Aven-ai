@@ -1,0 +1,6 @@
+# Version ranges, not exact pins: this stage was built where PyPI was unreachable,
+# so these could not be install-tested together. After your first successful run,
+# freeze what worked:  pip freeze > requirements.lock
+fastapi>=0.115,<1.0
+uvicorn>=0.30
+pydantic>=2.8,<3

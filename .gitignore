@@ -1,0 +1,21 @@
+# secrets and local data
+.env
+*.db
+*.db-journal
+*.corrupt-*
+# python
+.venv/
+__pycache__/
+*.pyc
+# flutter / android
+apps/android/.dart_tool/
+apps/android/build/
+apps/android/.flutter-plugins*
+apps/android/android/local.properties
+apps/android/android/key.properties
+*.jks
+*.keystore
+# packaging
+dist/
+build/
+*.spec
