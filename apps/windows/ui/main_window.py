@@ -6,7 +6,9 @@ enrollment) are shown disabled with a tooltip saying which stage adds them.
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
@@ -29,6 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from controllers.assistant_controller import AssistantController
+from app.core import router
 from ui.orb import OrbWidget
 from ui.speech import SpeechOutput
 from ui.speech_input import listen_and_transcribe, warm_model
@@ -43,6 +46,8 @@ QPushButton:hover { background: #67e8f9; }
 QPushButton:disabled { background: #1b2447; color: #5b6488; }
 QCheckBox { color: #8b93b0; }
 """
+
+log = logging.getLogger("aven.windows.ui")
 
 
 class _Signals(QObject):
@@ -61,6 +66,7 @@ class _Worker(QRunnable):
         try:
             self.signals.done.emit(self._fn())
         except Exception as exc:  # noqa: BLE001 - surface any failure in the UI
+            log.error("Background operation failed (%s)", exc.__class__.__name__)
             self.signals.failed.emit(str(exc) or exc.__class__.__name__)
 
 
@@ -105,6 +111,15 @@ class MainWindow(QMainWindow):
         self._voice_label.setObjectName("status")
         self._listen_stop = None
         self._speech_ready = False
+        self._last_transcript = ""
+        self._last_transcript_at = 0.0
+        self._voice_timings = None
+        self._timed_voice_request = False
+        self._speaking_started_at = None
+        self._speech_requested_at = None
+        if self._speaker is not None:
+            self._speaker.on_started = self._on_speech_started
+            self._speaker.on_finished = self._on_speech_finished
 
         self._transcript = QTextBrowser()
         self._transcript.setOpenExternalLinks(False)
@@ -126,6 +141,8 @@ class MainWindow(QMainWindow):
         self._stop_speaking.clicked.connect(self._stop_voice)
         self._voice_settings = QPushButton("Voice settings")
         self._voice_settings.clicked.connect(self._open_voice_settings)
+        self._diagnostics = QPushButton("Diagnostics")
+        self._diagnostics.clicked.connect(self._show_diagnostics)
 
         self._private = QCheckBox("Private session (don't save this conversation)")
         clear = QPushButton("Clear history")
@@ -140,6 +157,7 @@ class MainWindow(QMainWindow):
         tools.addWidget(self._mic)
         tools.addWidget(self._stop_speaking)
         tools.addWidget(self._voice_settings)
+        tools.addWidget(self._diagnostics)
         tools.addStretch(1)
         actions = QHBoxLayout()
         actions.addStretch(1)
@@ -216,20 +234,30 @@ class MainWindow(QMainWindow):
             return
         self._input.clear()
         self._append("You", text)
+        if router.route(text).name == "stop":
+            self._stop_voice()
+        if not self._timed_voice_request:
+            self._voice_timings = None
+        self._timed_voice_request = False
         self._send_button.setEnabled(False)
         self._set_state("thinking", "Thinking…")
         private = self._private.isChecked()
-        worker = _Worker(lambda: self._controller.send(text, private))
+        worker = _Worker(lambda: self._send_timed(text, private))
         worker.signals.done.connect(self._on_reply)
         worker.signals.failed.connect(self._on_error)
         self._pool.start(worker)
+
+    def _send_timed(self, text: str, private: bool):
+        started = time.perf_counter()
+        reply = self._controller.send(text, private)
+        return reply, time.perf_counter() - started
 
     def _toggle_listening(self) -> None:
         if not self._speech_ready:
             return
         if self._listen_stop is not None:
             self._listen_stop.set()
-            self._mic.setText("Processing…")
+            self._mic.setText("Transcribing…")
             self._mic.setEnabled(False)
             return
 
@@ -246,8 +274,25 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_transcription(self, result) -> None:
-        text, language = result
-        language_names = {"en": "English", "hi": "Hindi", "mr": "Marathi"}
+        text, language = result.text, result.language
+        normalized = " ".join(text.casefold().split())
+        now = time.monotonic()
+        if normalized == self._last_transcript and now - self._last_transcript_at < 2.5:
+            self._listen_stop = None
+            self._mic.setText("Mic")
+            self._mic.setEnabled(True)
+            self._send_button.setEnabled(True)
+            self._input.setEnabled(True)
+            self._set_state("idle", "Duplicate transcription ignored")
+            return
+        self._last_transcript = normalized
+        self._last_transcript_at = now
+        self._voice_timings = {
+            "listening": result.listening_seconds,
+            "transcription": result.transcription_seconds,
+        }
+        self._timed_voice_request = True
+        language_names = {"en": "English", "hi": "Hindi", "mr": "Marathi", "ur": "Hinglish"}
         self._listen_stop = None
         self._mic.setText("Mic")
         self._mic.setEnabled(True)
@@ -257,25 +302,105 @@ class MainWindow(QMainWindow):
             else f"Input: {language_names.get(language, language)}"
         )
         self._input.setEnabled(True)
+        self._set_state("thinking", "Thinking…")
         self._input.setText(text)
         self._send()
 
     @Slot(object)
-    def _on_reply(self, reply) -> None:
+    def _on_reply(self, result) -> None:
+        reply, processing_seconds = result
         self._append("Aven", reply.text)
-        if self._speaker is not None:
+        if reply.stop_speaking:
+            self._stop_voice()
+        elif self._speaker is not None:
             try:
+                self._speech_requested_at = time.perf_counter()
                 self._speaker.speak(reply.text)
             except Exception as exc:  # noqa: BLE001 - speech must not interrupt text chat
                 self._voice_label.setText(f"Spoken replies unavailable: {exc}")
                 self._stop_speaking.setEnabled(False)
         self._send_button.setEnabled(True)
-        self._set_state("idle", "Idle")
+        if self._speaker is None or reply.stop_speaking:
+            self._set_state("idle", "Idle")
+        else:
+            self._set_state("speaking", "Speaking…")
+        if self._voice_timings is not None:
+            self._voice_timings["processing"] = processing_seconds
+            self._voice_label.setText(
+                f"Listening {self._voice_timings['listening']:.1f}s | "
+                f"Transcription {self._voice_timings['transcription']:.1f}s | "
+                f"Processing {processing_seconds:.1f}s"
+            )
         self._input.setFocus()
+
+    def _on_speech_started(self) -> None:
+        self._speaking_started_at = time.perf_counter()
+        if self._voice_timings is not None and self._speech_requested_at is not None:
+            self._voice_timings["speech_start_latency"] = (
+                self._speaking_started_at - self._speech_requested_at
+            )
+        self._set_state("speaking", "Speaking…")
+
+    def _on_speech_finished(self) -> None:
+        started = self._speaking_started_at
+        self._speaking_started_at = None
+        if started is not None:
+            elapsed = time.perf_counter() - started
+            if self._voice_timings is not None:
+                self._voice_timings["speaking"] = elapsed
+                self._voice_label.setText(
+                    f"Listening {self._voice_timings['listening']:.1f}s | "
+                    f"Transcription {self._voice_timings['transcription']:.1f}s | "
+                    f"Processing {self._voice_timings['processing']:.1f}s | "
+                    f"Speak start {self._voice_timings.get('speech_start_latency', 0):.1f}s | "
+                    f"Speaking {elapsed:.1f}s"
+                )
+            self._set_state("idle", "Idle")
 
     def _stop_voice(self) -> None:
         if self._speaker is not None:
             self._speaker.stop()
+
+    def _show_diagnostics(self) -> None:
+        try:
+            import sounddevice as sd
+
+            device_index = sd.default.device[0]
+            device = sd.query_devices(device_index) if device_index is not None and device_index >= 0 else None
+            if device is None or device.get("max_input_channels", 0) < 1:
+                microphone = "No default input device is available"
+            else:
+                microphone = f"Available: {device['name']}"
+        except Exception as exc:  # noqa: BLE001 - diagnostic screen must remain available
+            log.warning("Microphone diagnostic failed (%s)", exc.__class__.__name__)
+            microphone = f"Unavailable ({exc.__class__.__name__})"
+
+        speech_engine = (
+            "faster-whisper tiny (ready)"
+            if self._speech_ready
+            else "faster-whisper tiny (loading or unavailable)"
+        )
+        voice_output = self._voice_status()
+        actions = "\n".join(
+            f"{name}: {description}"
+            for name, description in self._controller.action_service.supported_actions.items()
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Aven diagnostics")
+        dialog.resize(460, 420)
+        content = QVBoxLayout(dialog)
+        content.addWidget(QLabel(f"Microphone: {microphone}"))
+        content.addWidget(QLabel(f"Speech recognition: {speech_engine}"))
+        content.addWidget(QLabel(f"Speech output: {voice_output}"))
+        content.addWidget(QLabel(f"AI provider: {self._controller.ai_status}"))
+        content.addWidget(QLabel("Supported Windows actions:"))
+        action_list = QLabel(actions)
+        action_list.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        content.addWidget(action_list, 1)
+        close = QPushButton("Close")
+        close.clicked.connect(dialog.accept)
+        content.addWidget(close)
+        dialog.exec()
 
     def _open_voice_settings(self) -> None:
         original_voice = self._speaker.voice_id if self._speaker is not None else None

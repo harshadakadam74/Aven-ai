@@ -40,7 +40,9 @@ class SpeechOutput:
             (voice for voice in installed_voices if voice.id == voice_id),
             None,
         )
-        selected_voice = selected_voice or (male_voices[0] if male_voices else david_voice)
+        selected_voice = selected_voice or (
+            male_voices[0] if male_voices else david_voice or (installed_voices[0] if installed_voices else None)
+        )
         if selected_voice is None:
             raise RuntimeError("No usable Windows speech voice was found.")
 
@@ -49,10 +51,22 @@ class SpeechOutput:
         self.volume = float(volume if volume is not None else self._engine.getProperty("volume"))
         self._engine.setProperty("rate", self.rate)
         self._engine.setProperty("volume", self.volume)
+        self.on_started = None
+        self.on_finished = None
+        self._engine.connect("started-utterance", self._on_started)
+        self._engine.connect("finished-utterance", self._on_finished)
         self._engine.startLoop(False)
         self._timer = QTimer()
         self._timer.timeout.connect(self._engine.iterate)
         self._timer.start(10)
+
+    def _on_started(self, _name) -> None:
+        if self.on_started is not None:
+            self.on_started()
+
+    def _on_finished(self, _name, _completed) -> None:
+        if self.on_finished is not None:
+            self.on_finished()
 
     def set_voice(self, voice_id: str) -> None:
         voice = next((item for item in self.voices if item[0] == voice_id), None)

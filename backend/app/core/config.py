@@ -75,6 +75,11 @@ class Settings:
     port: int = 8000
     database_path: str = "./aven_ai.db"
     api_key: str = field(default="", repr=False)  # never printed or logged
+    ai_provider: str = ""
+    ai_api_key: str = field(default="", repr=False)
+    ai_model: str = "gpt-4o-mini"
+    ai_base_url: str = "https://api.openai.com/v1"
+    ai_timeout_seconds: int = 20
     approved_dirs: tuple[Path, ...] = ()
     extra_apps: dict[str, str] = field(default_factory=dict)
     confirm_actions: bool = False
@@ -104,6 +109,14 @@ class Settings:
                 env.get("DATABASE_URL", "sqlite:///./aven_ai.db").strip()
             ),
             api_key=env.get("AVEN_AI_API_KEY", "").strip(),
+            ai_provider=env.get("AI_PROVIDER", "").strip().lower(),
+            ai_api_key=env.get("AI_API_KEY", "").strip(),
+            ai_model=env.get("AI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini",
+            ai_base_url=(
+                env.get("AI_BASE_URL", "https://api.openai.com/v1").strip().rstrip("/")
+                or "https://api.openai.com/v1"
+            ),
+            ai_timeout_seconds=_get_int(env, "AI_TIMEOUT_SECONDS", 20, 1, 120),
             approved_dirs=approved,
             extra_apps=parse_extra_apps(env.get("AVEN_AI_EXTRA_APPS", "")),
             confirm_actions=_get_bool(env, "AVEN_AI_CONFIRM_ACTIONS", False),

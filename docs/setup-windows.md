@@ -15,7 +15,7 @@ Copy-Item .env.example .env
 python scripts\generate_key.py
 ```
 
-Open `.env` in a text editor and paste the generated key after `AVEN_AI_API_KEY=`. If PowerShell refuses to run scripts: `Set-ExecutionPolicy -Scope Process Bypass`.
+Open `.env` in a text editor and paste the generated key after `AVEN_AI_API_KEY=`. This key is for the backend API. Online AI is optional: set `AI_PROVIDER=openai` and `AI_API_KEY` to enable it; leave them blank to use the local fallback. Keep `.env` private and out of source control. If PowerShell refuses to run scripts: `Set-ExecutionPolicy -Scope Process Bypass`.
 
 Optional, in `.env`:
 
@@ -26,13 +26,24 @@ AVEN_AI_EXTRA_APPS=chrome=C:\Program Files\Google\Chrome\Application\chrome.exe
 
 Built in: Notepad, Calculator, Paint, File Explorer and VS Code (if `code` is on your PATH). Then "open my Scriptora project" opens `C:\Users\you\Projects\Scriptora`.
 
+The desktop action registry can also be edited at `apps/windows/config/windows_actions.json`:
+
+```json
+{
+	"applications": {
+		"chrome": "C:/Program Files/Google/Chrome/Application/chrome.exe"
+	},
+	"approved_directories": ["C:/Users/you/Projects"]
+}
+```
+
 ## 2. Run the tests
 
 ```powershell
 .\scripts\test.ps1
 ```
 
-Expected: `Ran 73 tests ... OK` for the backend and `Ran 4 tests ... OK` for the Windows controller. (These counts passed on Linux; two tests that need symlinks or `/bin/false` may skip or behave differently on Windows. A failure there is worth reporting.)
+Run `python scripts/run_tests.py` to see the current backend and Windows test results. Some platform-specific tests may be skipped when Windows lacks the needed symlink or executable behavior.
 
 ## 3. Start the desktop app
 
@@ -40,7 +51,9 @@ Expected: `Ran 73 tests ... OK` for the backend and `Ran 4 tests ... OK` for the
 .\scripts\run-windows.ps1
 ```
 
-The first desktop launch downloads the Whisper tiny multilingual model if needed, then warms it in the background; text chat stays available while **Mic** shows **Loading voice…**. After it is ready, speech recognition runs locally and supports English, Hindi and Marathi with automatic language detection by default. Click **Mic** to start recording and **Stop listening** when finished (up to 30 seconds per recording); silence and uncertain language detection are rejected. Aven speaks replies with an installed Windows voice. **Voice settings** lets you choose among installed voices, recognition language, speech speed, and volume, and includes a test-voice button. Audio is not sent to an online service.
+The first desktop launch downloads the Whisper tiny multilingual model if needed, then warms it in the background; text chat stays available while **Mic** shows **Loading voice…**. After it is ready, speech recognition runs locally with automatic English, Hindi, Marathi and Hinglish-compatible detection. Click **Mic** to start recording; silence ends capture automatically, or click **Stop listening**. Voice diagnostics report capture, transcription, processing and speaking durations. Replies use installed Windows voices, selectable in **Voice settings**. The **Diagnostics** dialog shows microphone access, speech engine readiness, provider configuration and the supported Windows action registry. Audio is not sent to the online AI provider.
+
+To run the app directly without activating the virtual environment, execute `python apps/windows/main.py` from the repository root after activating the environment.
 
 If Windows blocks microphone access, enable microphone access for desktop apps in **Settings > Privacy & security > Microphone**. The app uses the default Windows recording device.
 

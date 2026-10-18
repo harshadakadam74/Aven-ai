@@ -128,7 +128,7 @@ class AutomationPolicy:
         if spec is None:
             raise ActionError(
                 f"“{text}” isn't one of my approved apps. "
-                "You can add one with AVEN_AI_EXTRA_APPS."
+                "Add it to apps/windows/config/windows_actions.json or AVEN_AI_EXTRA_APPS."
             )
         executable = shutil.which(spec.command)
         if executable is None:
@@ -162,7 +162,7 @@ class AutomationPolicy:
         if not self._dirs:
             raise ActionError(
                 "No folders are approved yet. Set AVEN_AI_APPROVED_DIRS to the folders "
-                "I'm allowed to open."
+                "I'm allowed to open, or add paths to apps/windows/config/windows_actions.json."
             )
         name = name.strip()
         if not _SAFE_NAME.match(name) or ".." in name:

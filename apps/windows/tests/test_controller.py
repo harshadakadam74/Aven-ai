@@ -39,7 +39,7 @@ class ControllerTests(unittest.TestCase):
 
     def test_status_labels_do_not_overclaim(self):
         self.assertIn("Offline", self.controller.mode_label)
-        self.assertIn("not set up", self.controller.voice_label)
+        self.assertIn("diagnostics", self.controller.voice_label)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from app.automation.actions import ActionProposal, AutomationPolicy, ExecutionRe
 from app.core.config import Settings
 from app.database.store import Store
 from app.services.assistant import MAX_MESSAGE_LENGTH, AssistantService
+from app.services.ai_provider import ProviderError
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -20,6 +21,18 @@ class FakeExecutor:
     def run(self, proposal):
         self.calls.append(proposal)
         return ExecutionResult(self.ok, "Started." if self.ok else "boom")
+
+
+class FakeAIProvider:
+    def __init__(self, response="A concise online answer."):
+        self.response = response
+        self.calls = []
+
+    def generate(self, text, language):
+        self.calls.append((text, language))
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
 
 
 class Base(unittest.TestCase):
@@ -67,6 +80,22 @@ class ChatBasics(Base):
     def test_stop_signals_speech_interruption(self):
         reply = self.make().handle_text("stop")
         self.assertTrue(reply.stop_speaking)
+
+    def test_online_provider_handles_only_unknown_intents(self):
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        provider = FakeAIProvider()
+        service = AssistantService(store, Settings(), ai_provider=provider)
+        self.assertEqual(service.handle_text("what is 2 + 2").text, "2 + 2 = 4")
+        self.assertEqual(service.handle_text("explain decorators").text, provider.response)
+        self.assertEqual(provider.calls, [("explain decorators", "en")])
+
+    def test_provider_failure_uses_honest_offline_fallback(self):
+        store = Store(":memory:")
+        self.addCleanup(store.close)
+        provider = FakeAIProvider(ProviderError("Online AI could not be reached."))
+        service = AssistantService(store, Settings(), ai_provider=provider)
+        self.assertIn("can't answer that offline", service.handle_text("explain decorators").text)
 
     def test_empty_and_overlong_messages(self):
         svc = self.make()

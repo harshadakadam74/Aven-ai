@@ -25,6 +25,7 @@ from app.core import calc, i18n, router, timeparse
 from app.core.config import Settings
 from app.core.language import REPLY_LANGUAGE, detect_language
 from app.database.store import Store, parse_iso
+from app.services.ai_provider import AIProvider, ProviderError, configured_provider
 
 log = logging.getLogger("aven.assistant")
 
@@ -74,6 +75,7 @@ class AssistantService:
         policy: AutomationPolicy | None = None,
         clock: Callable[[], datetime] = _default_clock,
         allow_actions: bool = True,
+        ai_provider: AIProvider | None = None,
     ) -> None:
         # The HTTP API passes allow_actions=False: a remote request must not be
         # able to launch programs on this computer until device pairing exists.
@@ -86,6 +88,7 @@ class AssistantService:
             confirm_actions=self._settings.confirm_actions,
         )
         self._executor: Executor = executor or SystemExecutor()
+        self._ai_provider = ai_provider if ai_provider is not None else configured_provider(self._settings)
         self._clock = clock
         self._pending: dict[str, _Pending] = {}
         self._last_language: dict[str, str] = {}
@@ -197,6 +200,11 @@ class AssistantService:
                     )
                 return self._open(intent.args["target"], conv, language)
             case _:
+                if self._ai_provider is not None:
+                    try:
+                        return make(self._ai_provider.generate(raw, language))
+                    except ProviderError as exc:
+                        log.warning("Online AI failed; using offline fallback: %s", exc)
                 return make(i18n.text("fallback", lang))
 
     # -- pending follow-ups -----------------------------------------------------

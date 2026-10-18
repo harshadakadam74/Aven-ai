@@ -19,6 +19,8 @@ if str(_BACKEND) not in sys.path:
 from app.core.config import Settings, configure_logging  # noqa: E402
 from app.database.store import Store, parse_iso  # noqa: E402
 from app.services.assistant import AssistantService, Reply  # noqa: E402
+from app.services.ai_provider import provider_status  # noqa: E402
+from controllers.windows_action_service import WindowsActionService  # noqa: E402
 
 log = logging.getLogger("aven.windows")
 
@@ -35,17 +37,27 @@ class AssistantController:
         configure_logging(self.settings.log_level)
         self._owns_store = store is None
         self.store = store or Store(self.settings.database_path)
-        self.assistant = AssistantService(self.store, self.settings)
+        self.action_service = WindowsActionService(self.settings)
+        self.assistant = AssistantService(
+            self.store,
+            self.settings,
+            executor=self.action_service.executor,
+            policy=self.action_service.policy,
+        )
         self.conversation_id: str | None = None
 
     # Status shown in the dashboard. Only things that actually exist in Stage 1.
     @property
     def mode_label(self) -> str:
-        return "Offline mode (online AI arrives in Stage 4)"
+        return f"Online AI: {provider_status(self.settings)}"
+
+    @property
+    def ai_status(self) -> str:
+        return provider_status(self.settings)
 
     @property
     def voice_label(self) -> str:
-        return "Voice verification: not set up (Stage 3)"
+        return "Offline speech engines are checked in the Windows diagnostics screen"
 
     def send(self, text: str, private: bool = False) -> Reply:
         reply = self.assistant.handle_text(text, self.conversation_id, private)

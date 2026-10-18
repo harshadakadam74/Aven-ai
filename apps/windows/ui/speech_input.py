@@ -3,17 +3,50 @@
 from __future__ import annotations
 
 import threading
+import time
+from collections import deque
+from dataclasses import dataclass
 
 _MODEL = None
 _MODEL_LOCK = threading.Lock()
-_SUPPORTED_LANGUAGES = {"en", "hi", "mr"}
+_SUPPORTED_LANGUAGES = {"en", "hi", "mr", "ur"}
 _MIN_LANGUAGE_PROBABILITY = 0.35
+
+
+@dataclass(frozen=True)
+class TranscriptionResult:
+    text: str
+    language: str
+    listening_seconds: float
+    transcription_seconds: float
+
+
+class _EnergyVAD:
+    def __init__(self) -> None:
+        self.noise_level = 0.003
+        self.speech_started = False
+        self.quiet_chunks = 0
+
+    def update(self, samples) -> tuple[float, bool]:
+        import numpy as np
+
+        volume = float(np.sqrt(np.mean(samples**2)))
+        threshold = max(0.0045, self.noise_level * 2.8)
+        active = volume >= threshold
+        if active:
+            self.speech_started = True
+            self.quiet_chunks = 0
+        elif self.speech_started:
+            self.quiet_chunks += 1
+        else:
+            self.noise_level = self.noise_level * 0.9 + volume * 0.1
+        return volume, active
 
 
 def _validate_language(language: str, probability: float) -> str:
     if language not in _SUPPORTED_LANGUAGES or probability < _MIN_LANGUAGE_PROBABILITY:
         raise RuntimeError(
-            "I couldn't confidently detect English, Hindi, or Marathi. "
+            "I couldn't confidently detect English, Hindi, Marathi, or Hinglish. "
             "Please try again and speak clearly."
         )
     return language
@@ -58,32 +91,34 @@ def listen_and_transcribe(
 
     model = _get_model()
 
+    started_at = time.perf_counter()
     audio_chunks = []
-    speech_started = False
-    quiet_chunks = 0
+    vad = _EnergyVAD()
+    pre_roll = deque(maxlen=3)
     waiting_chunks = 0
     with sd.InputStream(samplerate=16_000, channels=1, dtype="float32") as stream:
-        while not stop_event.is_set() and len(audio_chunks) < 120:
-            chunk, _ = stream.read(4_000)
+        while not stop_event.is_set() and waiting_chunks < 300:
+            chunk, _ = stream.read(1_600)
             samples = chunk[:, 0]
-            volume = float(np.sqrt(np.mean(samples**2)))
-            if not speech_started:
-                waiting_chunks += 1
-                if volume < 0.008:
-                    if waiting_chunks >= 40:
-                        break
-                    continue
-                speech_started = True
-
+            _, active = vad.update(samples)
+            waiting_chunks += 1
+            if not vad.speech_started:
+                pre_roll.append(samples)
+                if waiting_chunks >= 150:
+                    break
+                continue
+            if not audio_chunks:
+                audio_chunks.extend(pre_roll)
             audio_chunks.append(samples)
-            quiet_chunks = quiet_chunks + 1 if volume < 0.006 else 0
-            if quiet_chunks >= 6:
+            if vad.quiet_chunks >= 8:
                 break
 
+    listening_seconds = time.perf_counter() - started_at
     if not audio_chunks:
         raise RuntimeError("No speech detected. Press Mic and try speaking again.")
 
     audio = np.concatenate(audio_chunks)
+    transcription_started = time.perf_counter()
     segments, info = model.transcribe(
         audio,
         beam_size=1,
@@ -91,7 +126,8 @@ def listen_and_transcribe(
         language=None if language == "auto" else language,
     )
     text = " ".join(segment.text.strip() for segment in segments).strip()
+    transcription_seconds = time.perf_counter() - transcription_started
     if not text:
         raise RuntimeError("I couldn't understand that. Please try speaking again.")
     language = _validate_language(info.language, info.language_probability)
-    return text, language
+    return TranscriptionResult(text, language, listening_seconds, transcription_seconds)
